@@ -1,0 +1,404 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Web Whiteboard Dock</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #f0f0f0;
+      font-family: 'Arial', sans-serif;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    #toolbar {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(10px);
+      border-radius: 20%;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+      padding: 8px 10px;
+      display: flex;
+      gap: 15px;
+      z-index: 999;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: flex-start;
+      transition: top 0.3s ease-in-out;
+    }
+
+    #toolbar.hide {
+      top: -150px; /* moves toolbar further off-screen */
+    }
+
+    .tool, .action-btn {
+      background: transparent;  /* no background */
+      border: none;             /* remove border */
+      padding: 8px;
+      cursor: pointer;
+      font-size: 22px;          /* bigger icon size */
+      transition: transform 0.2s ease, color 0.2s ease;
+    }
+
+    .tool.active {
+      color: #007bff;           /* active color */
+    }
+
+    .tool:hover, .action-btn:hover {
+      transform: scale(1.4);    /* zoom in on hover */
+      color: #007bff;           /* highlight on hover */
+    }
+
+    #pageNumber {
+      font-weight: bold;
+      font-size: 14px;
+      padding: 4px 8px;
+      border-radius: 6px;
+      background: #f1f1f1;
+      border: 1px solid #ccc;
+    }
+
+    input[type="color"] {
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 8px;
+      overflow: hidden;
+      padding: 0;
+      margin: 0;
+    }
+
+    input[type="range"] {
+      width: 80px;
+      height: 8px;
+      background: #ccc;
+      border-radius: 4px;
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 16px;
+      height: 16px;
+      background: #007bff;
+      border-radius: 50%;
+    }
+
+    #recentColors {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .recent-color {
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      border: 2px solid #999;
+      cursor: pointer;
+    }
+
+    #board {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: #fff;
+      touch-action: none;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="toolbar" class="show force-show">
+    <button id="penBtn" class="tool active" title="Pen">✏️</button>
+    <button id="eraserBtn" class="tool" title="Eraser">🧽</button>
+    <input type="color" id="colorPicker" title="Stroke Color"/>
+    <div id="recentColors" title="Recent Colors"></div>
+    <input type="range" id="lineWidth" min="1" max="50" value="5" title="Line Width"/>
+    <button id="prevPage" class="action-btn" title="Previous Page">⏮️</button>
+    <span id="pageNumber">Page 1</span>
+    <button id="nextPage" class="action-btn" title="Next Page">⏭️</button>
+    <button id="undoBtn" class="action-btn" title="Undo">↩️</button>
+    <button id="redoBtn" class="action-btn" title="Redo">↪️</button>
+    <button id="clearBtn" class="action-btn" title="Clear">🗑️</button>
+    <button id="saveBtn" class="action-btn" title="Save Image">💾</button>
+    <input type="color" id="bgColorPicker" title="Canvas Background"/>
+  </div>
+
+  <canvas id="board"></canvas>
+
+  <script>
+    const canvas = document.getElementById('board');
+    const ctx = canvas.getContext('2d');
+    const toolbar = document.getElementById('toolbar');
+    const penBtn = document.getElementById('penBtn');
+    const eraserBtn = document.getElementById('eraserBtn');
+    const colorPicker = document.getElementById('colorPicker');
+    const lineWidthRange = document.getElementById('lineWidth');
+    const clearBtn = document.getElementById('clearBtn');
+    const saveBtn = document.getElementById('saveBtn');
+    const bgColorPicker = document.getElementById('bgColorPicker');
+    const undoBtn = document.getElementById('undoBtn');
+    const redoBtn = document.getElementById('redoBtn');
+    const nextPageBtn = document.getElementById('nextPage');
+    const prevPageBtn = document.getElementById('prevPage');
+    const pageNumber = document.getElementById('pageNumber');
+    const recentColorsDiv = document.getElementById('recentColors');
+
+    let drawing = false;
+    let tool = 'pen';
+    let recentColors = [];
+    let toolbarVisible = true;
+
+    let pages = [{}];
+    let currentPage = 0;
+
+    function saveState() {
+      const page = pages[currentPage];
+      page.undoStack = page.undoStack || [];
+      page.redoStack = [];
+      page.undoStack.push(canvas.toDataURL());
+      if (page.undoStack.length > 100) page.undoStack.shift();
+    }
+
+    function restoreState(fromStack, toStack) {
+      const page = pages[currentPage];
+      if (!fromStack?.length) return;
+      toStack.push(canvas.toDataURL());
+      const img = new Image();
+      img.src = fromStack.pop();
+      img.onload = () => {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        page.image = canvas.toDataURL();
+      };
+    }
+
+    function resizeCanvas() {
+      const imgData = canvas.toDataURL();
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+      const img = new Image();
+      img.src = imgData;
+      img.onload = () => ctx.drawImage(img, 0, 0);
+    }
+
+    function updatePageDisplay() {
+      pageNumber.textContent = `Page ${currentPage + 1}`;
+    }
+
+    function loadPage(index) {
+      if (!pages[index]) pages[index] = {};
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (pages[index].image) {
+        const img = new Image();
+        img.src = pages[index].image;
+        img.onload = () => ctx.drawImage(img, 0, 0);
+      }
+      updatePageDisplay();
+    }
+
+    function addRecentColor(color) {
+      if (recentColors.includes(color)) return;
+      recentColors.unshift(color);
+      if (recentColors.length > 5) recentColors.pop();
+      renderRecentColors();
+    }
+
+    function renderRecentColors() {
+      recentColorsDiv.innerHTML = '';
+      recentColors.forEach(color => {
+        const div = document.createElement('div');
+        div.className = 'recent-color';
+        div.style.backgroundColor = color;
+        div.onclick = () => {
+          colorPicker.value = color;
+        };
+        recentColorsDiv.appendChild(div);
+      });
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    resizeCanvas();
+
+    bgColorPicker.addEventListener('input', () => {
+      canvas.style.backgroundColor = bgColorPicker.value;
+    });
+
+    function getCanvasPos(e) {
+      const rect = canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX || e.touches?.[0].clientX) - rect.left,
+        y: (e.clientY || e.touches?.[0].clientY) - rect.top,
+      };
+    }
+
+    function pointerDown(e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      drawing = true;
+      saveState();
+      const pos = getCanvasPos(e);
+      ctx.beginPath();
+      ctx.moveTo(pos.x, pos.y);
+    }
+
+    function pointerMove(e) {
+      if (!drawing) return;
+      const pos = getCanvasPos(e);
+      ctx.lineWidth = lineWidthRange.value;
+      ctx.lineCap = 'round';
+
+      if (tool === 'pen') {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = colorPicker.value;
+      } else {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+      }
+
+      ctx.lineTo(pos.x, pos.y);
+      ctx.stroke();
+    }
+
+    function pointerUp(e) {
+      if (e.button !== undefined && e.button !== 0) return;
+      if (drawing) {
+        drawing = false;
+        ctx.closePath();
+        pages[currentPage].image = canvas.toDataURL();
+      }
+    }
+
+    canvas.addEventListener('mousedown', pointerDown);
+    canvas.addEventListener('mousemove', pointerMove);
+    canvas.addEventListener('mouseup', pointerUp);
+    canvas.addEventListener('mouseleave', pointerUp);
+
+    canvas.addEventListener('touchstart', (e) => {
+      e.preventDefault();
+      pointerDown(e);
+    });
+    canvas.addEventListener('touchmove', (e) => {
+      e.preventDefault();
+      pointerMove(e);
+    });
+    canvas.addEventListener('touchend', (e) => {
+      e.preventDefault();
+      pointerUp(e);
+    });
+
+    penBtn.addEventListener('click', () => {
+      tool = 'pen';
+      penBtn.classList.add('active');
+      eraserBtn.classList.remove('active');
+    });
+
+    eraserBtn.addEventListener('click', () => {
+      tool = 'eraser';
+      eraserBtn.classList.add('active');
+      penBtn.classList.remove('active');
+    });
+
+    clearBtn.addEventListener('click', () => {
+      const ok = confirm('Clear this page?');
+      if (ok) {
+        saveState();
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        pages[currentPage].image = canvas.toDataURL();
+      }
+    });
+
+    saveBtn.addEventListener('click', () => {
+      const link = document.createElement('a');
+      link.download = `whiteboard-page-${currentPage + 1}-${Date.now()}.png`;
+      link.href = canvas.toDataURL('image/png');
+      link.click();
+    });
+
+    undoBtn.addEventListener('click', () => {
+      restoreState(pages[currentPage]?.undoStack, pages[currentPage]?.redoStack);
+    });
+
+    redoBtn.addEventListener('click', () => {
+      restoreState(pages[currentPage]?.redoStack, pages[currentPage]?.undoStack);
+    });
+
+    nextPageBtn.addEventListener('click', () => {
+      pages[currentPage].image = canvas.toDataURL();
+      currentPage++;
+      loadPage(currentPage);
+    });
+
+    prevPageBtn.addEventListener('click', () => {
+      if (currentPage === 0) return alert('This is the first page.');
+      pages[currentPage].image = canvas.toDataURL();
+      currentPage--;
+      loadPage(currentPage);
+    });
+
+    colorPicker.addEventListener('input', (e) => {
+      addRecentColor(e.target.value);
+    });
+
+    // Right click to toggle toolbar further top
+    document.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      toolbarVisible = !toolbarVisible;
+      if (toolbarVisible) {
+        toolbar.classList.remove('hide');
+        toolbar.classList.add('force-show', 'show');
+      } else {
+        toolbar.classList.add('hide');
+        toolbar.classList.remove('force-show', 'show');
+      }
+    });
+
+    let prevColor = null;
+    let lastColor = null;
+    let swappingColor = false;
+
+    colorPicker.addEventListener('input', (e) => {
+      if (!swappingColor) {
+        lastColor = prevColor;
+        prevColor = e.target.value;
+      }
+      addRecentColor(e.target.value);
+    });
+
+    document.addEventListener('keydown', (e) => {
+      if (e.ctrlKey && e.key.toLowerCase() === 'z') {
+        e.preventDefault();
+        undoBtn.click();
+      }
+
+      if (e.ctrlKey && e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        if (prevColor && lastColor) {
+          swappingColor = true;
+          let temp = prevColor;
+          prevColor = lastColor;
+          lastColor = temp;
+          colorPicker.value = prevColor;
+          swappingColor = false;
+        }
+      }
+    });
+
+    loadPage(0);
+  </script>
+</body>
+</html>
